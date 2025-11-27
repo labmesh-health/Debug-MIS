@@ -110,4 +110,5 @@ def parse_sample_counter(pdf_bytes: bytes) -> pd.DataFrame:
                         })
 
     df = pd.DataFrame(rows)
-    if not df.empty
+    if not df.empty:
+
