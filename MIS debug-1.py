@@ -20,9 +20,10 @@ def extract_date_from_text(text: str):
                 continue
     return None
 
-# ---------- TEST COUNTER ----------
+# ---------- TEST COUNTER (uses last-6-numbers logic, ACN correct) ----------
 def parse_test_counter(pdf_bytes: bytes) -> pd.DataFrame:
-    header_line = "Test ACN Routine Rerun STAT Calib. QC Total Count"
+    headers = ["Test", "ACN", "Routine", "Rerun", "STAT", "Calibrator", "QC", "Total Count"]
+    header_pattern = r"Test\s+ACN.*Total\s*Count"
     rows = []
 
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
@@ -35,33 +36,35 @@ def parse_test_counter(pdf_bytes: bytes) -> pd.DataFrame:
             lines = text.split("\n")
 
             for i, line in enumerate(lines):
-                if line.strip() == header_line:
+                if re.search(header_pattern, line, re.IGNORECASE):
                     for data_line in lines[i + 1:]:
-                        dl = data_line.strip()
-                        if not dl or dl.lower().startswith(("total", "unit:", "system:")):
+                        data_line = data_line.strip()
+                        if not data_line or data_line.lower().startswith(("total", "unit:", "system:")):
                             break
-                        parts = re.split(r"\s+", dl)
+
+                        parts = re.split(r"\s+", data_line)
                         if len(parts) < 8:
                             continue
-                        test_name = parts[0]
-                        acn = parts[1]
-                        routine = parts[2]
-                        rerun = parts[3]
-                        stat = parts[4]
-                        calib = parts[5]
-                        qc = parts[6]
-                        total = parts[7]
-                        rows.append({
+
+                        # last 6 values are numeric counters
+                        nums = parts[-6:]
+                        acn = parts[-7]
+                        test_name = " ".join(parts[:-7]).strip()
+                        if not test_name:
+                            continue
+
+                        row = {
                             "Test": test_name,
                             "ACN": acn,
-                            "Routine": routine,
-                            "Rerun": rerun,
-                            "STAT": stat,
-                            "Calibrator": calib,
-                            "QC": qc,
-                            "Total Count": total,
+                            "Routine": nums[0],
+                            "Rerun": nums[1],
+                            "STAT": nums[2],
+                            "Calibrator": nums[3],
+                            "QC": nums[4],
+                            "Total Count": nums[5],
                             "Date": date,
-                        })
+                        }
+                        rows.append(row)
 
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -123,7 +126,7 @@ def parse_mc_counter(pdf_bytes: bytes) -> pd.DataFrame:
 
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
+            text = pdf.pages[-1].extract_text() if page == pdf.pages[-1] else page.extract_text()
             if not text:
                 continue
 
@@ -138,7 +141,7 @@ def parse_mc_counter(pdf_bytes: bytes) -> pd.DataFrame:
                             dl.lower().startswith(("electrodes counter", "system:", "unit:", "total"))):
                             break
                         parts = re.split(r"\s+", dl)
-                        # pattern: e8-2-1 01/01/1900 00:00:00 4032 4032
+                        # e8-2-1 01/01/1900 00:00:00 4032 4032
                         if len(parts) < 5:
                             continue
                         unit = parts[0]
@@ -147,7 +150,7 @@ def parse_mc_counter(pdf_bytes: bytes) -> pd.DataFrame:
                         total = parts[4]
                         rows.append({
                             "Unit": unit,
-                            "MC Serial No.": "",  # not present in extracted text
+                            "MC Serial No.": "",   # not present in extracted text
                             "Last Reset": last_reset,
                             "Count after Reset": count_after,
                             "Total Count": total,
@@ -224,23 +227,23 @@ if uploaded_file:
         "Test Counter",
         "Sample Counter",
         "Measuring Cells Counter",
-        "Electrodes Counter"
+        "Electrodes Counter",
     ])
 
     with tabs[0]:
         st.subheader("Test Counter Data (raw)")
-        st.write(test_df.head(50))
+        st.write(test_df)
 
     with tabs[1]:
         st.subheader("Sample Counter Data (raw)")
-        st.write(sample_df.head(50))
+        st.write(sample_df)
 
     with tabs[2]:
         st.subheader("Measuring Cells Counter Data (raw)")
-        st.write(mc_df.head(50))
+        st.write(mc_df)
 
     with tabs[3]:
         st.subheader("Electrodes Counter Data (raw)")
-        st.write(electrode_df.head(50))
+        st.write(electrode_df)
 else:
     st.info("Upload the Detailed Test Counter PDF to see parsed tables.")
