@@ -20,7 +20,7 @@ def extract_date_from_text(text: str):
                 continue
     return None
 
-# ---------- TEST COUNTER (page 1 etc.) ----------
+# ---------- TEST COUNTER ----------
 def parse_test_counter(pdf_bytes: bytes) -> pd.DataFrame:
     header_line = "Test ACN Routine Rerun STAT Calib. QC Total Count"
     rows = []
@@ -70,10 +70,9 @@ def parse_test_counter(pdf_bytes: bytes) -> pd.DataFrame:
         df["Date"] = pd.to_datetime(df["Date"])
     return df
 
-# ---------- SAMPLE COUNTER (page 5) ----------
+# ---------- SAMPLE COUNTER ----------
 def parse_sample_counter(pdf_bytes: bytes) -> pd.DataFrame:
     header_line = "Unit: Routine Rerun STAT Total Count"
-    headers = ["Unit", "Routine", "Rerun", "STAT", "Total Count"]
     rows = []
 
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
@@ -81,13 +80,14 @@ def parse_sample_counter(pdf_bytes: bytes) -> pd.DataFrame:
             text = page.extract_text()
             if not text:
                 continue
+
             date = extract_date_from_text(text)
             lines = text.split("\n")
 
             for i, line in enumerate(lines):
                 if line.strip() == header_line:
-                    for dl in lines[i + 1:]:
-                        dl = dl.strip()
+                    for data_line in lines[i + 1:]:
+                        dl = data_line.strip()
                         if (not dl or
                             dl.lower().startswith(("total count", "measuring cells counter",
                                                    "system:", "unit:"))):
@@ -111,4 +111,136 @@ def parse_sample_counter(pdf_bytes: bytes) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     if not df.empty:
+        for col in ["Routine", "Rerun", "STAT", "Total Count"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        df["Date"] = pd.to_datetime(df["Date"])
+    return df
 
+# ---------- MEASURING CELLS COUNTER ----------
+def parse_mc_counter(pdf_bytes: bytes) -> pd.DataFrame:
+    header_line = "Unit: MC Serial No. Last Reset Count after Reset Total Count"
+    rows = []
+
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text:
+                continue
+
+            date = extract_date_from_text(text)
+            lines = text.split("\n")
+
+            for i, line in enumerate(lines):
+                if line.strip() == header_line:
+                    for data_line in lines[i + 1:]:
+                        dl = data_line.strip()
+                        if (not dl or
+                            dl.lower().startswith(("electrodes counter", "system:", "unit:", "total"))):
+                            break
+                        parts = re.split(r"\s+", dl)
+                        # pattern: e8-2-1 01/01/1900 00:00:00 4032 4032
+                        if len(parts) < 5:
+                            continue
+                        unit = parts[0]
+                        last_reset = parts[1] + " " + parts[2]
+                        count_after = parts[3]
+                        total = parts[4]
+                        rows.append({
+                            "Unit": unit,
+                            "MC Serial No.": "",  # not present in extracted text
+                            "Last Reset": last_reset,
+                            "Count after Reset": count_after,
+                            "Total Count": total,
+                            "Date": date,
+                        })
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        for col in ["Count after Reset", "Total Count"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        df["Date"] = pd.to_datetime(df["Date"])
+    return df
+
+# ---------- ELECTRODES COUNTER ----------
+def parse_electrode_counter(pdf_bytes: bytes) -> pd.DataFrame:
+    header_line = "Electrode Total Count"
+    rows = []
+
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text:
+                continue
+
+            date = extract_date_from_text(text)
+            lines = text.split("\n")
+            current_unit = None
+
+            for i, line in enumerate(lines):
+                if line.strip().startswith("Unit:"):
+                    parts = re.split(r"\s+", line.strip())
+                    if len(parts) >= 2:
+                        current_unit = parts[-1]
+
+                if line.strip() == header_line:
+                    for data_line in lines[i + 1:]:
+                        dl = data_line.strip()
+                        if not dl or dl.lower().startswith(("system:", "total", "unit:")):
+                            break
+                        parts = re.split(r"\s+", dl)
+                        if len(parts) < 2:
+                            continue
+                        electrode = " ".join(parts[:-1])
+                        total = parts[-1]
+                        rows.append({
+                            "Unit": current_unit,
+                            "Electrode": electrode,
+                            "Total Count": total,
+                            "Date": date,
+                        })
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Total Count"] = pd.to_numeric(df["Total Count"], errors="coerce").fillna(0).astype(int)
+        df["Date"] = pd.to_datetime(df["Date"])
+    return df
+
+# ---------- UI ----------
+uploaded_file = st.sidebar.file_uploader("Upload Detailed Test Counter PDF", type=["pdf"])
+
+if uploaded_file:
+    pdf_bytes = uploaded_file.read()
+
+    with st.spinner("Parsing Test Counter..."):
+        test_df = parse_test_counter(pdf_bytes)
+    with st.spinner("Parsing Sample Counter..."):
+        sample_df = parse_sample_counter(pdf_bytes)
+    with st.spinner("Parsing Measuring Cells Counter..."):
+        mc_df = parse_mc_counter(pdf_bytes)
+    with st.spinner("Parsing Electrodes Counter..."):
+        electrode_df = parse_electrode_counter(pdf_bytes)
+
+    tabs = st.tabs([
+        "Test Counter",
+        "Sample Counter",
+        "Measuring Cells Counter",
+        "Electrodes Counter"
+    ])
+
+    with tabs[0]:
+        st.subheader("Test Counter Data (raw)")
+        st.write(test_df.head(50))
+
+    with tabs[1]:
+        st.subheader("Sample Counter Data (raw)")
+        st.write(sample_df.head(50))
+
+    with tabs[2]:
+        st.subheader("Measuring Cells Counter Data (raw)")
+        st.write(mc_df.head(50))
+
+    with tabs[3]:
+        st.subheader("Electrodes Counter Data (raw)")
+        st.write(electrode_df.head(50))
+else:
+    st.info("Upload the Detailed Test Counter PDF to see parsed tables.")
